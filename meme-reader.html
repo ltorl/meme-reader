@@ -1,0 +1,952 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Meme Reader</title>
+<script defer src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
+<style>
+  :root {
+    --bg: #0c0d11; --panel: #15171e; --panel2: #1c1f28; --line: #2a2e3a;
+    --text: #e9ebf1; --muted: #8b91a3; --accent: #ff3d6e; --accent2: #7c5cff;
+    --ok: #3ddc97; --warn: #ffb547; --err: #ff6161;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); }
+  body { font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  button, input, textarea, select { font: inherit; color: inherit; }
+  [hidden] { display: none !important; }
+
+  header { display: flex; align-items: center; gap: 12px; padding: 14px 20px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+  header h1 { margin: 0; font-size: 18px; font-weight: 750; letter-spacing: -.01em; }
+  header h1 span { color: var(--accent); }
+  header .sub { color: var(--muted); }
+  .pill { margin-left: auto; display: inline-flex; align-items: center; gap: 8px; padding: 5px 12px; border-radius: 999px; background: var(--panel2); border: 1px solid var(--line); color: var(--muted); font-size: 12.5px; }
+  .pill::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .pill.ok::before { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+  .pill.err::before { background: var(--err); }
+
+  main { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 20px; padding: 20px; max-width: 1400px; margin: 0 auto; align-items: start; }
+  @media (max-width: 960px) { main { grid-template-columns: 1fr; padding: 16px; } }
+
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 16px; margin-bottom: 16px; }
+  .card h2 { margin: 0 0 12px; font-size: 12px; font-weight: 650; letter-spacing: .09em; text-transform: uppercase; color: var(--muted); display: flex; align-items: center; gap: 8px; }
+  .card h2 .count { margin-left: auto; text-transform: none; letter-spacing: 0; font-weight: 500; }
+
+  .btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; padding: 9px 14px; border-radius: 10px; border: 1px solid var(--line); background: var(--panel2); cursor: pointer; font-weight: 600; white-space: nowrap; }
+  .btn:hover:not(:disabled) { border-color: #3b4152; background: #232733; }
+  .btn:disabled { opacity: .45; cursor: not-allowed; }
+  .btn.primary { background: linear-gradient(135deg, var(--accent), #ff6b45); border-color: transparent; color: #fff; }
+  .btn.primary:hover:not(:disabled) { filter: brightness(1.08); background: linear-gradient(135deg, var(--accent), #ff6b45); }
+  .btn.violet { background: var(--accent2); border-color: transparent; color: #fff; }
+  .btn.violet:hover:not(:disabled) { filter: brightness(1.1); background: var(--accent2); }
+  .btn.small { padding: 6px 10px; font-size: 12.5px; border-radius: 8px; }
+  .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .hint { color: var(--muted); font-size: 12.5px; }
+  .hint code, details code { background: #0007; padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+
+  #drop { border: 2px dashed var(--line); border-radius: 12px; padding: 22px; text-align: center; cursor: pointer; transition: .15s; background: #0003; }
+  #drop:hover, #drop.over { border-color: var(--accent); background: #ff3d6e12; }
+  #drop strong { display: block; font-size: 15px; margin-bottom: 2px; }
+
+  #list { list-style: none; margin: 14px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+  .meme { display: grid; grid-template-columns: 24px 22px 88px minmax(0, 1fr) auto; gap: 10px; align-items: start; padding: 10px; border-radius: 12px; background: var(--panel2); border: 1px solid transparent; }
+  .meme.selected { border-color: #ff3d6e66; }
+  .meme.live { border-color: var(--accent); box-shadow: 0 0 0 3px #ff3d6e22; }
+  .meme.dragging { opacity: .45; }
+  .handle { cursor: grab; color: var(--muted); font-size: 16px; line-height: 1; padding: 6px 0; letter-spacing: -3px; text-align: center; user-select: none; }
+  .handle:active { cursor: grabbing; }
+  .num { font-weight: 750; color: var(--muted); padding-top: 4px; text-align: center; font-variant-numeric: tabular-nums; }
+  .thumb { width: 88px; height: 88px; object-fit: contain; background: #000; border-radius: 8px; }
+  .meme textarea { width: 100%; resize: vertical; min-height: 64px; background: #0c0d11; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; line-height: 1.4; }
+  .meme textarea:focus, input[type=text]:focus { outline: none; border-color: var(--accent2); }
+  .meta { display: flex; align-items: center; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
+  .status { font-size: 12px; color: var(--muted); margin-right: auto; }
+  .status.ok { color: var(--ok); } .status.warn { color: var(--warn); } .status.err { color: var(--err); }
+  .mini { border: 1px solid var(--line); background: none; border-radius: 6px; padding: 3px 8px; font-size: 12px; cursor: pointer; color: var(--muted); }
+  .mini:hover { color: var(--text); border-color: #3b4152; }
+  .ctrls { display: flex; flex-direction: column; gap: 4px; }
+  .icon { width: 28px; height: 28px; border-radius: 7px; border: 1px solid var(--line); background: none; cursor: pointer; color: var(--muted); padding: 0; }
+  .icon:hover:not(:disabled) { color: var(--text); border-color: #3b4152; }
+  .icon:disabled { opacity: .3; cursor: default; }
+  .icon.del:hover { color: var(--err); border-color: var(--err); }
+  #empty { text-align: center; color: var(--muted); padding: 10px 0 2px; }
+
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 1180px) { .grid2 { grid-template-columns: 1fr; } }
+  label.field { display: block; margin-bottom: 12px; }
+  label.field > span { display: flex; justify-content: space-between; font-size: 12.5px; color: var(--muted); margin-bottom: 5px; }
+  input[type=text] { width: 100%; background: #0c0d11; border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+  input[type=range] { width: 100%; accent-color: var(--accent); }
+  .check { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; cursor: pointer; }
+  .check input { accent-color: var(--accent); width: 16px; height: 16px; }
+  #voiceAudio { width: 100%; height: 36px; margin-top: 10px; }
+  .badge { font-size: 12.5px; padding: 8px 10px; border-radius: 8px; background: #0c0d11; border: 1px solid var(--line); margin-bottom: 10px; }
+  .badge.ok { border-color: #3ddc9755; } .badge.warn { border-color: #ffb54766; color: var(--warn); } .badge.err { border-color: #ff616166; color: var(--err); }
+  details { margin-top: 12px; font-size: 12.5px; color: var(--muted); }
+  details summary { cursor: pointer; color: var(--text); font-weight: 600; }
+  details pre { background: #0c0d11; border: 1px solid var(--line); border-radius: 8px; padding: 10px; overflow-x: auto; color: var(--text); font-size: 12px; line-height: 1.5; }
+
+  .side { position: sticky; top: 16px; width: min(400px, 100%); }
+  @media (max-width: 960px) { .side { position: static; width: 100%; } }
+  .stage-wrap { background: #000; border-radius: 16px; overflow: hidden; border: 1px solid var(--line); display: flex; justify-content: center; }
+  #stage { display: block; height: min(68vh, 680px); aspect-ratio: 9 / 16; width: auto; max-width: 100%; }
+  @media (max-width: 960px) { #stage { height: auto; width: 100%; } }
+  .bar { height: 6px; border-radius: 3px; background: var(--panel2); overflow: hidden; margin: 12px 0 6px; }
+  .bar > div { height: 100%; width: 0; background: linear-gradient(90deg, var(--accent), var(--accent2)); transition: width .1s linear; }
+  #progressText { font-size: 12.5px; color: var(--muted); min-height: 18px; }
+  #progressText.err { color: var(--err); }
+  .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 12px; }
+  .actions .wide { grid-column: 1 / -1; }
+  #result video { width: 100%; border-radius: 10px; background: #000; margin-top: 4px; max-height: 340px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Meme<span>Reader</span></h1>
+  <div class="sub">Drop memes → reorder → voiced 9:16 reel</div>
+  <div id="modelPill" class="pill">Voice model not loaded</div>
+</header>
+
+<main>
+  <section>
+    <div class="card">
+      <h2>Memes <span class="count" id="count"></span></h2>
+      <div id="drop" tabindex="0" role="button" aria-label="Add meme images">
+        <strong>Drop meme images here</strong>
+        <span class="hint">or click to browse · paste with ⌘V / Ctrl+V · text is read from each image automatically</span>
+      </div>
+      <input id="fileInput" type="file" accept="image/*" multiple hidden>
+      <ol id="list"></ol>
+      <div id="empty" class="hint">No memes yet.</div>
+    </div>
+
+    <div class="grid2">
+      <div class="card">
+        <h2>Voice clone</h2>
+        <div class="row">
+          <button class="btn" id="voiceBtn">Upload voice clip</button>
+          <button class="btn small" id="modelBtn">Load model now</button>
+        </div>
+        <input id="voiceFile" type="file" accept="audio/*,video/*" hidden>
+        <p class="hint" id="voiceInfo">Upload 10–20 s of one person speaking clearly (at least 5 s). Every meme is read in that voice.</p>
+        <audio id="voiceAudio" controls hidden></audio>
+        <div id="modelBox" class="badge" style="margin-top:12px"></div>
+        <div class="bar" id="modelBarWrap" hidden><div id="modelBar"></div></div>
+        <p class="hint">Tip: Turbo understands tags like <code>[laugh]</code>, <code>[chuckle]</code>, <code>[sigh]</code> and <code>[gasp]</code> in the text.</p>
+        <p class="hint" id="fileWarn" hidden>This page was opened as a file, so the model can't be cached and parkour.mp4 can't load automatically. In this folder, run <code>python3 -m http.server 8000</code> and open <code>http://localhost:8000/meme-reader.html</code> instead.</p>
+      </div>
+
+      <div class="card">
+        <h2>Video</h2>
+        <div id="bgStatus" class="badge">Looking for parkour.mp4…</div>
+        <div class="row" style="margin-bottom:14px">
+          <button class="btn small" id="bgPick">Choose background video</button>
+          <button class="btn small" id="bgRetry">Look for parkour.mp4 again</button>
+        </div>
+        <input id="bgFile" type="file" accept="video/*" hidden>
+
+        <label class="field"><span>Pause between memes <b id="gapVal"></b></span>
+          <input type="range" id="gap" min="0" max="2" step="0.05">
+        </label>
+        <label class="field"><span>Background video volume <b id="bgVolVal"></b></span>
+          <input type="range" id="bgVol" min="0" max="1" step="0.05">
+        </label>
+        <label class="check"><input type="checkbox" id="random"> Start the background at a random point</label>
+        <label class="check"><input type="checkbox" id="fixCaps"> Convert ALL-CAPS meme text to normal case</label>
+        <p class="hint">Output is 1080×1920 at 30 fps, recorded in real time. Keep this tab visible while it renders.</p>
+      </div>
+    </div>
+  </section>
+
+  <aside class="side">
+    <div class="card">
+      <h2>Preview</h2>
+      <div class="stage-wrap"><canvas id="stage" width="1080" height="1920"></canvas></div>
+      <div class="bar"><div id="bar"></div></div>
+      <div id="progressText"></div>
+      <div class="actions">
+        <button class="btn" id="genBtn">Generate voices</button>
+        <button class="btn violet" id="previewBtn">▶ Preview</button>
+        <button class="btn primary wide" id="renderBtn">● Render video</button>
+        <button class="btn wide" id="stopBtn" disabled>■ Stop</button>
+      </div>
+    </div>
+    <div class="card" id="result" hidden>
+      <h2>Your reel</h2>
+      <video id="resultVideo" controls playsinline></video>
+      <div class="row" style="margin-top:10px">
+        <a class="btn primary" id="resultDl" download>Download</a>
+        <span class="hint" id="resultInfo"></span>
+      </div>
+    </div>
+  </aside>
+</main>
+
+<video id="bg" muted loop playsinline preload="auto" hidden></video>
+
+<!-- Chatterbox Turbo runs in a module Web Worker (built from this block) so the page stays responsive. -->
+<script type="text/plain" id="tts-worker">
+import { ChatterboxModel, AutoProcessor, Tensor, env } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.1';
+
+const MODEL_ID = 'ResembleAI/chatterbox-turbo-ONNX';
+// 4-bit weights with fp32 math (~0.7 GB). The fp16/q4f16 variants mumble on WebGPU.
+const DTYPE = { embed_tokens: 'q4', speech_encoder: 'q4', language_model: 'q4', conditional_decoder: 'q4' };
+
+let model = null, processor = null, speaker = null, loading = null, queue = Promise.resolve();
+
+async function load({ cache }) {
+  env.useBrowserCache = cache;
+  let device = 'wasm';
+  try { if (navigator.gpu && await navigator.gpu.requestAdapter()) device = 'webgpu'; } catch {}
+  const files = new Map();
+  const progress_callback = p => {
+    if (p.status !== 'progress' || !p.total) return;
+    files.set(p.file, [p.loaded, p.total]);
+    let loaded = 0, total = 0;
+    for (const [l, t] of files.values()) { loaded += l; total += t; }
+    postMessage({ type: 'progress', loaded, total });
+  };
+  processor = await AutoProcessor.from_pretrained(MODEL_ID);
+  model = await ChatterboxModel.from_pretrained(MODEL_ID, { device, dtype: DTYPE, progress_callback });
+  return { device };
+}
+
+// Turbo stops early on long inputs, so speak long text sentence by sentence
+function splitText(text, limit = 220) {
+  const out = [];
+  let cur = '';
+  for (let part of text.trim().split(/(?<=[.!?])\s+/)) {
+    while (part.length > limit) {
+      let cut = part.lastIndexOf(' ', limit);
+      if (cut <= 0) cut = limit;
+      if (cur) { out.push(cur); cur = ''; }
+      out.push(part.slice(0, cut));
+      part = part.slice(cut).trim();
+    }
+    if (cur && cur.length + 1 + part.length > limit) { out.push(cur); cur = part; }
+    else cur = (cur + ' ' + part).trim();
+  }
+  if (cur) out.push(cur);
+  return out;
+}
+
+async function handle({ type, ...args }) {
+  if (type === 'load') return await (loading ??= load(args).catch(e => { loading = null; throw e; }));
+  if (!model) throw new Error('Model not loaded');
+  if (type === 'voice') {
+    speaker = await model.encode_speech(new Tensor('float32', args.samples, [1, args.samples.length]));
+    return true;
+  }
+  if (type === 'tts') {
+    if (!speaker) throw new Error('Upload a voice clip first');
+    const gap = new Float32Array(Math.round(24000 * 0.12));
+    const pieces = [];
+    for (const chunk of splitText(args.text)) {
+      const wav = await model.generate({ ...(await processor(chunk)), ...speaker, max_new_tokens: 1000 });
+      pieces.push(Float32Array.from(wav.data), gap);
+    }
+    pieces.pop();
+    const out = new Float32Array(pieces.reduce((n, p) => n + p.length, 0));
+    let o = 0;
+    for (const p of pieces) { out.set(p, o); o += p.length; }
+    return out;
+  }
+  throw new Error('Unknown request ' + type);
+}
+
+// One request at a time: the ONNX sessions aren't safe to run concurrently
+self.onmessage = ({ data: { id, ...req } }) => {
+  queue = queue.then(async () => {
+    try {
+      const result = await handle(req);
+      postMessage({ id, ok: true, result }, result instanceof Float32Array ? [result.buffer] : []);
+    } catch (e) {
+      postMessage({ id, ok: false, error: e?.message || String(e) });
+    }
+  });
+};
+</script>
+
+<script>
+const $ = s => document.querySelector(s);
+const W = 1080, H = 1920;
+const LEAD = 0.15;   // seconds a meme is on screen before its voice starts
+const HOLD = 2.5;    // seconds for memes with no text to read
+const canvas = $('#stage'), g = canvas.getContext('2d');
+const bgVideo = $('#bg');
+
+const memes = [];
+let nextId = 1, selectedId = null, dragId = null;
+let actx = null, graph = null, run = null, busy = false;
+let voice = null, bgReady = false, bgName = '';
+let ocrWorker = null, ocrChain = Promise.resolve(), lineSrc = null, liveId = null;
+
+// ---------- settings (remembered per browser) ----------
+const store = {
+  get(k, d) { try { const v = localStorage.getItem('memeReader.' + k); return v === null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem('memeReader.' + k, JSON.stringify(v)); } catch {} },
+};
+const settings = {
+  gap: store.get('gap', 0.4),
+  bgVol: store.get('bgVol', 0),
+  random: store.get('random', true),
+  fixCaps: store.get('fixCaps', true),
+};
+function bindSetting(id, key, fmt) {
+  const el = $('#' + id), out = $('#' + id + 'Val');
+  const isCheck = el.type === 'checkbox';
+  isCheck ? (el.checked = settings[key]) : (el.value = settings[key]);
+  const show = () => out && (out.textContent = fmt(settings[key]));
+  show();
+  el.addEventListener(isCheck ? 'change' : 'input', () => {
+    settings[key] = isCheck ? el.checked : +el.value;
+    store.set(key, settings[key]);
+    show();
+  });
+}
+bindSetting('gap', 'gap', v => v.toFixed(2) + ' s');
+bindSetting('bgVol', 'bgVol', v => Math.round(v * 100) + '%');
+bindSetting('random', 'random');
+bindSetting('fixCaps', 'fixCaps');
+
+const fmt = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+
+// ---------- audio ----------
+function getCtx() { return actx ??= new AudioContext(); }
+function ensureGraph() {
+  if (graph) return graph;
+  const ctx = getCtx();
+  const recDest = ctx.createMediaStreamDestination();
+  const voiceGain = ctx.createGain();
+  voiceGain.connect(ctx.destination); voiceGain.connect(recDest);
+  const bgGain = ctx.createGain();
+  bgGain.gain.value = 0;
+  bgGain.connect(ctx.destination); bgGain.connect(recDest);
+  ctx.createMediaElementSource(bgVideo).connect(bgGain);
+  return graph = { recDest, voiceGain, bgGain };
+}
+
+// ---------- Chatterbox Turbo (in-browser, WebGPU) ----------
+const SR = 24000;
+const isFile = location.protocol === 'file:';
+let ttsWorker = null, reqId = 0, modelReady = null;
+const requests = new Map();
+
+function modelStatus(text, cls = '', pill) {
+  const box = $('#modelBox');
+  box.textContent = text;
+  box.className = 'badge ' + cls;
+  if (pill) { $('#modelPill').textContent = pill; $('#modelPill').className = 'pill ' + cls; }
+}
+function ttsCall(type, args = {}) {
+  if (!ttsWorker) {
+    const src = $('#tts-worker').textContent;
+    ttsWorker = new Worker(URL.createObjectURL(new Blob([src], { type: 'text/javascript' })), { type: 'module' });
+    ttsWorker.onmessage = ({ data }) => {
+      if (data.type === 'progress') {
+        $('#modelBarWrap').hidden = false;
+        $('#modelBar').style.width = (100 * data.loaded / data.total).toFixed(1) + '%';
+        modelStatus(`Downloading Chatterbox Turbo… ${(data.loaded / 1e6).toFixed(0)} / ${(data.total / 1e6).toFixed(0)} MB`, '', 'Downloading voice model…');
+        return;
+      }
+      const r = requests.get(data.id);
+      requests.delete(data.id);
+      data.ok ? r.ok(data.result) : r.fail(new Error(data.error));
+    };
+    ttsWorker.onerror = e => {
+      e.preventDefault?.();
+      const err = new Error('The voice model crashed' + (e.message ? `: ${e.message}` : '') + '. Reload the page to try again.');
+      requests.forEach(r => r.fail(err));
+      requests.clear();
+      ttsWorker = null;
+      modelReady = null;
+      if (voice) voice.ready = null;
+      modelStatus(err.message, 'err', 'Voice model error');
+    };
+  }
+  return new Promise((ok, fail) => {
+    const id = ++reqId;
+    requests.set(id, { ok, fail });
+    ttsWorker.postMessage({ id, type, ...args });
+  });
+}
+function loadModel() {
+  return modelReady ??= (async () => {
+    modelStatus('Loading Chatterbox Turbo…', '', 'Loading voice model…');
+    $('#modelBtn').disabled = true;
+    try {
+      const { device } = await ttsCall('load', { cache: !isFile });
+      const where = device === 'webgpu' ? 'WebGPU' : 'CPU (no WebGPU, so this will be slow)';
+      modelStatus(`✓ Chatterbox Turbo loaded · ${where}`, 'ok', `Chatterbox Turbo · ${device === 'webgpu' ? 'WebGPU' : 'CPU'}`);
+      $('#modelBtn').hidden = true;
+      return device;
+    } catch (e) {
+      modelReady = null;
+      $('#modelBtn').disabled = false;
+      modelStatus(`Couldn't load the voice model: ${e.message}`, 'err', 'Voice model error');
+      throw e;
+    } finally {
+      $('#modelBarWrap').hidden = true;
+    }
+  })();
+}
+function voiceReady() {
+  if (!voice) return Promise.reject(new Error('Upload a voice clip to clone first.'));
+  return voice.ready ??= (async () => {
+    await loadModel();
+    await ttsCall('voice', { samples: voice.samples });
+  })().catch(e => { if (voice) voice.ready = null; throw e; });
+}
+modelStatus(`Chatterbox Turbo runs right here in your browser on WebGPU. The first load downloads about 0.7 GB${isFile ? '' : ', which is then cached'}.`);
+$('#modelBtn').onclick = () => loadModel().catch(() => {});
+$('#fileWarn').hidden = !isFile;
+
+const voiceKey = () => voice ? voice.key : 'none';
+const audioKey = m => voiceKey() + '|' + m.text.trim();
+const freshAudio = m => (m.text.trim() && m.audio?.key === audioKey(m)) ? m.audio : null;
+
+async function synthesize(m) {
+  const text = m.text.trim();
+  if (!text) return null;
+  const key = audioKey(m);
+  if (m.audio?.key === key) return m.audio;
+  if (m.pending?.key === key) return m.pending.promise;
+
+  const promise = (async () => {
+    await voiceReady();
+    const samples = await ttsCall('tts', { text });
+    const buffer = getCtx().createBuffer(1, samples.length, SR);
+    buffer.copyToChannel(samples, 0);
+    return { key, buffer };
+  })();
+
+  m.pending = { key, promise };
+  m.error = null;
+  refreshStatus(m);
+  try {
+    const audio = await promise;
+    m.audio = audio;
+    return audio;
+  } catch (e) {
+    m.error = e.message;
+    throw e;
+  } finally {
+    if (m.pending?.key === key) m.pending = null;
+    refreshStatus(m);
+  }
+}
+
+async function generateAll() {
+  const todo = memes.filter(m => m.text.trim() && !freshAudio(m));
+  if (todo.length) await voiceReady();
+  for (let i = 0; i < todo.length; i++) {
+    setProgress(i / todo.length, `Generating voice ${i + 1} of ${todo.length}…`);
+    await synthesize(todo[i]);
+  }
+  setProgress(0, todo.length ? 'Voices ready' : '');
+}
+
+async function sayLine(m) {
+  try {
+    const ctx = getCtx(); await ctx.resume();
+    const a = await synthesize(m);
+    if (!a) return;
+    try { lineSrc?.stop(); } catch {}
+    lineSrc = ctx.createBufferSource();
+    lineSrc.buffer = a.buffer;
+    lineSrc.connect(ctx.destination);
+    lineSrc.start();
+  } catch (e) { setProgress(0, e.message, true); }
+}
+
+// voice reference clip: decoded to 24 kHz mono, which is what Chatterbox expects
+$('#voiceBtn').onclick = () => $('#voiceFile').click();
+$('#voiceFile').onchange = async e => {
+  const f = e.target.files[0];
+  e.target.value = '';
+  if (!f) return;
+  let buf;
+  try {
+    buf = await new OfflineAudioContext(1, 1, SR).decodeAudioData(await f.arrayBuffer());
+  } catch {
+    $('#voiceInfo').textContent = `Couldn't read audio from “${f.name}”. Try a WAV or MP3.`;
+    return;
+  }
+  const len = Math.min(buf.length, SR * 30);
+  const samples = new Float32Array(len);
+  for (let c = 0; c < buf.numberOfChannels; c++) {
+    const ch = buf.getChannelData(c);
+    for (let i = 0; i < len; i++) samples[i] += ch[i] / buf.numberOfChannels;
+  }
+  voice = { key: `${f.name}:${f.size}:${f.lastModified}`, samples, ready: null };
+  const au = $('#voiceAudio');
+  if (au.src) URL.revokeObjectURL(au.src);
+  au.src = URL.createObjectURL(f);
+  au.hidden = false;
+  $('#voiceBtn').textContent = 'Change voice clip';
+  const d = buf.duration;
+  $('#voiceInfo').textContent = `Cloning from “${f.name}” (${d.toFixed(1)} s${d > 30 ? ', using the first 30 s' : ''}).` +
+    (d < 5 ? ' This is too short: Turbo needs at least 5 s of speech.' : '');
+  memes.forEach(refreshStatus);
+  voiceReady().catch(() => {});   // start downloading/encoding right away
+};
+
+// ---------- OCR ("reading" the meme) ----------
+function sentenceCase(t) {
+  return t.toLowerCase()
+    .replace(/(^\s*|[.!?]\s+)([a-z])/g, (_, p, c) => p + c.toUpperCase())
+    .replace(/\bi\b/g, 'I').replace(/\bi'(m|ve|ll|d)\b/g, "I'$1");
+}
+function cleanOcr(raw) {
+  const lines = raw.split(/\n+/)
+    .map(l => l.replace(/[|_~`^<>{}\[\]\\=*#@]/g, ' ').replace(/\s+/g, ' ').trim())
+    .filter(l => {
+      const good = (l.match(/[a-z0-9]/gi) || []).length;
+      return good >= 2 && good / l.length > 0.55;
+    });
+  let t = lines.join(' ').replace(/\s+([,.!?;:])/g, '$1').trim();
+  if (settings.fixCaps && /[A-Z]/.test(t) && t === t.toUpperCase()) t = sentenceCase(t);
+  return t;
+}
+function ocrSource(img) {
+  // Upscaling small memes helps Tesseract with chunky Impact-style text
+  const k = Math.min(3, Math.max(1, 1600 / img.naturalWidth));
+  const c = document.createElement('canvas');
+  c.width = Math.round(img.naturalWidth * k);
+  c.height = Math.round(img.naturalHeight * k);
+  const cx = c.getContext('2d');
+  cx.fillStyle = '#fff';
+  cx.fillRect(0, 0, c.width, c.height);
+  cx.drawImage(img, 0, 0, c.width, c.height);
+  return c;
+}
+function queueOcr(m, force = false) {
+  m.ocr = 'queued';
+  refreshStatus(m);
+  ocrChain = ocrChain.then(() => runOcr(m, force));
+}
+async function runOcr(m, force) {
+  if (!memes.includes(m)) return;
+  if (!window.Tesseract) { m.ocr = 'unavailable'; refreshStatus(m); return; }
+  m.ocr = 'reading';
+  refreshStatus(m);
+  try {
+    await m.img.decode().catch(() => {});
+    ocrWorker ??= Tesseract.createWorker('eng');
+    const worker = await ocrWorker;
+    const { data } = await worker.recognize(ocrSource(m.img));
+    const text = cleanOcr(data.text || '');
+    // Don't clobber text the user already typed (unless they asked to re-scan)
+    if (force || !m.text.trim()) {
+      m.text = text;
+      m.ta.value = text;
+    }
+    m.ocr = text ? 'done' : 'empty';
+  } catch (e) {
+    console.error('OCR failed', e);
+    ocrWorker = null;
+    m.ocr = 'failed';
+  }
+  refreshStatus(m);
+}
+
+// ---------- meme list ----------
+function refreshStatus(m) {
+  const el = m.statusEl;
+  if (!el) return;
+  let text = '', cls = '';
+  const a = freshAudio(m);
+  if (m.ocr === 'queued' || m.ocr === 'reading') text = m.ocr === 'reading' ? 'Reading text from image…' : 'Waiting to read text…';
+  else if (m.pending) text = 'Generating voice…';
+  else if (m.error) { text = m.error; cls = 'err'; }
+  else if (a) { text = `✓ Voice ready · ${a.buffer.duration.toFixed(1)} s`; cls = 'ok'; }
+  else if (!m.text.trim()) {
+    text = m.ocr === 'unavailable' ? 'OCR unavailable (offline?): type the text'
+      : m.ocr === 'failed' ? "Couldn't read text: type it in"
+      : `No text: shown silently for ${HOLD} s`;
+    cls = 'warn';
+  }
+  else if (m.audio) text = 'Text changed: voice will regenerate';
+  else text = 'Voice not generated yet';
+  el.textContent = text;
+  el.className = 'status ' + cls;
+}
+
+function buildRow(m) {
+  const row = document.createElement('li');
+  row.className = 'meme';
+  row.innerHTML = `
+    <div class="handle" title="Drag to reorder">⋮⋮</div>
+    <div class="num"></div>
+    <img class="thumb" alt="">
+    <div>
+      <textarea rows="3" placeholder="Text to read aloud…"></textarea>
+      <div class="meta">
+        <span class="status"></span>
+        <button class="mini say">▶ Listen</button>
+        <button class="mini rescan" title="Read the text from the image again">Re-scan</button>
+      </div>
+    </div>
+    <div class="ctrls">
+      <button class="icon up" aria-label="Move up" title="Move up">↑</button>
+      <button class="icon down" aria-label="Move down" title="Move down">↓</button>
+      <button class="icon del" aria-label="Remove" title="Remove">✕</button>
+    </div>`;
+  const thumb = row.querySelector('.thumb');
+  thumb.src = m.url; thumb.title = m.name;
+  m.ta = row.querySelector('textarea');
+  m.statusEl = row.querySelector('.status');
+  m.row = row;
+
+  m.ta.addEventListener('input', () => { m.text = m.ta.value; m.error = null; refreshStatus(m); });
+  row.addEventListener('focusin', () => select(m));
+  row.addEventListener('click', () => select(m));
+  row.querySelector('.say').onclick = () => sayLine(m);
+  row.querySelector('.rescan').onclick = () => queueOcr(m, true);
+  row.querySelector('.up').onclick = () => move(m, -1);
+  row.querySelector('.down').onclick = () => move(m, 1);
+  row.querySelector('.del').onclick = e => { e.stopPropagation(); remove(m); };
+
+  // Drag only from the handle so text in the textarea stays selectable
+  const handle = row.querySelector('.handle');
+  handle.addEventListener('pointerdown', () => { row.draggable = true; });
+  handle.addEventListener('pointerup', () => { row.draggable = false; });
+  row.addEventListener('dragstart', e => {
+    dragId = m.id;
+    row.classList.add('dragging');
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', String(m.id));
+  });
+  row.addEventListener('dragend', () => {
+    row.draggable = false;
+    row.classList.remove('dragging');
+    dragId = null;
+    renderList();
+  });
+  row.addEventListener('dragover', e => {
+    if (dragId === null) return;
+    e.preventDefault();
+    if (dragId === m.id) return;
+    const dragged = memes.find(x => x.id === dragId);
+    const r = row.getBoundingClientRect();
+    const after = e.clientY > r.top + r.height / 2;
+    if (after ? row.nextElementSibling === dragged.row : row.previousElementSibling === dragged.row) return;
+    memes.splice(memes.indexOf(dragged), 1);
+    memes.splice(memes.indexOf(m) + (after ? 1 : 0), 0, dragged);
+    after ? row.after(dragged.row) : row.before(dragged.row);
+    renumber();
+  });
+  row.addEventListener('drop', e => { if (dragId !== null) e.preventDefault(); });
+  refreshStatus(m);
+}
+
+function renumber() {
+  memes.forEach((m, i) => {
+    m.row.querySelector('.num').textContent = i + 1;
+    m.row.querySelector('.up').disabled = i === 0;
+    m.row.querySelector('.down').disabled = i === memes.length - 1;
+  });
+}
+function renderList() {
+  const list = $('#list');
+  memes.forEach(m => {
+    if (m.row.parentNode !== list || list.children[memes.indexOf(m)] !== m.row) list.appendChild(m.row);
+    m.row.classList.toggle('selected', m.id === selectedId);
+  });
+  renumber();
+  $('#empty').hidden = memes.length > 0;
+  $('#count').textContent = memes.length ? `${memes.length} meme${memes.length > 1 ? 's' : ''}` : '';
+  updateButtons();
+}
+function select(m) {
+  if (selectedId === m.id) return;
+  selectedId = m.id;
+  memes.forEach(x => x.row.classList.toggle('selected', x.id === selectedId));
+}
+function move(m, dir) {
+  const i = memes.indexOf(m), j = i + dir;
+  if (j < 0 || j >= memes.length || run) return;
+  [memes[i], memes[j]] = [memes[j], memes[i]];
+  renderList();
+}
+function remove(m) {
+  if (run) return;
+  memes.splice(memes.indexOf(m), 1);
+  m.row.remove();
+  URL.revokeObjectURL(m.url);
+  if (selectedId === m.id) selectedId = memes[0]?.id ?? null;
+  renderList();
+}
+
+function addFiles(files) {
+  const imgs = [...files].filter(f => f.type.startsWith('image/'));
+  for (const f of imgs) {
+    const m = { id: nextId++, name: f.name || 'pasted image', url: URL.createObjectURL(f), img: new Image(), text: '', audio: null, pending: null, error: null, ocr: 'queued' };
+    m.img.src = m.url;
+    memes.push(m);
+    buildRow(m);
+    selectedId ??= m.id;
+    queueOcr(m);
+  }
+  renderList();
+}
+
+$('#drop').onclick = () => $('#fileInput').click();
+$('#drop').onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); $('#fileInput').click(); } };
+$('#fileInput').onchange = e => { addFiles(e.target.files); e.target.value = ''; };
+window.addEventListener('paste', e => {
+  if (e.target.closest?.('textarea, input')) return;
+  const files = [...(e.clipboardData?.files || [])];
+  if (files.length) { e.preventDefault(); addFiles(files); }
+});
+const hasFiles = e => [...(e.dataTransfer?.types || [])].includes('Files');
+window.addEventListener('dragover', e => { if (dragId === null && hasFiles(e)) { e.preventDefault(); $('#drop').classList.add('over'); } });
+window.addEventListener('dragleave', e => { if (!e.relatedTarget) $('#drop').classList.remove('over'); });
+window.addEventListener('drop', e => {
+  if (dragId !== null || !hasFiles(e)) return;
+  e.preventDefault();
+  $('#drop').classList.remove('over');
+  const files = [...e.dataTransfer.files];
+  const vid = files.find(f => f.type.startsWith('video/'));
+  if (vid) setBg(vid, vid.name);
+  addFiles(files);
+});
+
+// ---------- background video ----------
+function bgStatus(text, cls = '') { const el = $('#bgStatus'); el.textContent = text; el.className = 'badge ' + cls; }
+function setBg(blob, name) {
+  if (bgVideo.src) URL.revokeObjectURL(bgVideo.src);
+  bgReady = false;
+  bgName = name;
+  bgStatus(`Loading ${name}…`);
+  bgVideo.src = URL.createObjectURL(blob);
+  bgVideo.play().catch(() => {});
+}
+async function loadDefaultBg() {
+  bgStatus('Looking for parkour.mp4…');
+  try {
+    // Fetched as a blob so the canvas stays untainted and can be recorded
+    const r = await fetch('parkour.mp4', { cache: 'no-store' });
+    if (!r.ok) throw new Error(r.status);
+    setBg(await r.blob(), 'parkour.mp4');
+  } catch {
+    bgStatus(location.protocol === 'file:'
+      ? 'Opened as a local file, so parkour.mp4 can\'t load automatically. Choose it below, or serve this folder (see the Voice clone card).'
+      : 'parkour.mp4 isn\'t in this folder yet. Add it and click "Look again", or choose a video below.', 'warn');
+  }
+}
+bgVideo.addEventListener('loadeddata', () => { bgReady = true; bgStatus(`✓ ${bgName} · ${fmt(bgVideo.duration)}`, 'ok'); });
+bgVideo.addEventListener('error', () => { if (!bgVideo.src) return; bgReady = false; bgStatus(`Couldn't play ${bgName}`, 'err'); });
+$('#bgPick').onclick = () => $('#bgFile').click();
+$('#bgFile').onchange = e => { const f = e.target.files[0]; if (f) setBg(f, f.name); e.target.value = ''; };
+$('#bgRetry').onclick = loadDefaultBg;
+
+function seekBg(t) {
+  return new Promise(ok => {
+    if (Math.abs(bgVideo.currentTime - t) < 0.05) return ok();
+    const done = () => { clearTimeout(timer); ok(); };
+    const timer = setTimeout(done, 1500);
+    bgVideo.addEventListener('seeked', done, { once: true });
+    bgVideo.currentTime = t;
+  });
+}
+
+// ---------- drawing ----------
+const easeOutBack = x => 1 + 2.2 * Math.pow(x - 1, 3) + 1.2 * Math.pow(x - 1, 2);
+function drawBg(now) {
+  if (bgReady && bgVideo.readyState >= 2) {
+    const vw = bgVideo.videoWidth, vh = bgVideo.videoHeight;
+    const k = Math.max(W / vw, H / vh);
+    g.drawImage(bgVideo, (W - vw * k) / 2, (H - vh * k) / 2, vw * k, vh * k);
+    g.fillStyle = 'rgba(0,0,0,.18)';
+    g.fillRect(0, 0, W, H);
+  } else {
+    const h = (now / 80) % 360;
+    const grd = g.createLinearGradient(0, 0, W, H);
+    grd.addColorStop(0, `hsl(${h},55%,18%)`);
+    grd.addColorStop(1, `hsl(${(h + 60) % 360},60%,10%)`);
+    g.fillStyle = grd;
+    g.fillRect(0, 0, W, H);
+  }
+}
+function drawMeme(img, s) {
+  if (!img.naturalWidth || s < 0) return;
+  const k = Math.min(W * 0.9 / img.naturalWidth, H * 0.66 / img.naturalHeight);
+  const w = img.naturalWidth * k, h = img.naturalHeight * k;
+  const p = Math.min(1, s / 0.25);
+  const scale = 0.82 + 0.18 * easeOutBack(p);
+  g.save();
+  g.globalAlpha = Math.min(1, s / 0.12);
+  g.translate(W / 2, H / 2);
+  g.scale(scale, scale);
+  g.beginPath();
+  g.roundRect(-w / 2, -h / 2, w, h, 26);
+  g.shadowColor = 'rgba(0,0,0,.6)'; g.shadowBlur = 60; g.shadowOffsetY = 20;
+  g.fillStyle = '#fff';
+  g.fill();
+  g.shadowColor = 'transparent';
+  g.clip();
+  g.drawImage(img, -w / 2, -h / 2, w, h);
+  g.restore();
+}
+function drawCenterText(lines) {
+  g.save();
+  g.fillStyle = 'rgba(255,255,255,.85)';
+  g.textAlign = 'center';
+  g.font = '600 54px system-ui, sans-serif';
+  lines.forEach((l, i) => g.fillText(l, W / 2, H / 2 + (i - (lines.length - 1) / 2) * 76));
+  g.restore();
+}
+
+function frame(now) {
+  requestAnimationFrame(frame);
+  drawBg(now);
+  if (run) {
+    const t = actx.currentTime - run.t0;
+    const i = run.segs.findIndex(s => t < s.end);
+    const seg = run.segs[i === -1 ? run.segs.length - 1 : i];
+    drawMeme(seg.m.img, t - seg.start);
+    if (liveId !== seg.m.id) {
+      liveId = seg.m.id;
+      memes.forEach(m => m.row.classList.toggle('live', m.id === liveId));
+    }
+    const label = run.record ? '● Recording' : '▶ Preview';
+    setProgress(Math.min(1, Math.max(0, t) / run.total),
+      `${label} · meme ${run.segs.indexOf(seg) + 1}/${run.segs.length} · ${fmt(Math.max(0, t))} / ${fmt(run.total)}`);
+    if (t >= run.total) finish(true);
+  } else {
+    const m = memes.find(x => x.id === selectedId) ?? memes[0];
+    if (m) drawMeme(m.img, 10);
+    else drawCenterText(['Drop memes to start', bgReady ? '' : '(no background video yet)'].filter(Boolean));
+  }
+}
+requestAnimationFrame(frame);
+
+// ---------- playback & recording ----------
+function setProgress(p, text, err = false) {
+  if (p != null) $('#bar').style.width = (p * 100).toFixed(1) + '%';
+  const el = $('#progressText');
+  if (text !== undefined) { el.textContent = text; el.classList.toggle('err', err); }
+}
+function updateButtons() {
+  const none = memes.length === 0;
+  $('#genBtn').disabled = busy || none;
+  $('#previewBtn').disabled = busy || none;
+  $('#renderBtn').disabled = busy || none || !window.MediaRecorder;
+  $('#stopBtn').disabled = !run;
+}
+function pickMime() {
+  const types = ['video/mp4;codecs=avc1.640028,mp4a.40.2', 'video/mp4;codecs=avc1,mp4a.40.2', 'video/mp4',
+    'video/webm;codecs=vp9,opus', 'video/webm;codecs=vp8,opus', 'video/webm'];
+  return types.find(t => MediaRecorder.isTypeSupported(t)) || '';
+}
+
+function buildTimeline() {
+  let t = 0;
+  return memes.map(m => {
+    const a = freshAudio(m);
+    const seg = { m, start: t, audio: a, end: t + LEAD + (a ? a.buffer.duration : HOLD) + settings.gap };
+    t = seg.end;
+    return seg;
+  });
+}
+
+async function play(record) {
+  if (busy || !memes.length) return;
+  busy = true; updateButtons();
+  try {
+    const ctx = getCtx();
+    await ctx.resume();
+    ensureGraph();
+    await generateAll();
+
+    const segs = buildTimeline();
+    const total = segs.at(-1).end;
+    if (bgReady) {
+      const room = bgVideo.duration - total - 0.5;
+      await seekBg(settings.random && room > 0 ? Math.random() * room : 0);
+      bgVideo.muted = false;
+      graph.bgGain.gain.value = settings.bgVol;
+      await bgVideo.play().catch(() => {});
+    }
+
+    let recorder = null, stream = null, mime = '';
+    const chunks = [];
+    if (record) {
+      mime = pickMime();
+      stream = new MediaStream([...canvas.captureStream(30).getVideoTracks(), ...graph.recDest.stream.getAudioTracks()]);
+      recorder = new MediaRecorder(stream, { ...(mime && { mimeType: mime }), videoBitsPerSecond: 8_000_000, audioBitsPerSecond: 192_000 });
+      recorder.ondataavailable = e => e.data.size && chunks.push(e.data);
+      recorder.start(250);
+    }
+    const t0 = ctx.currentTime + 0.1;
+    const sources = segs.filter(s => s.audio).map(s => {
+      const src = ctx.createBufferSource();
+      src.buffer = s.audio.buffer;
+      src.connect(graph.voiceGain);
+      src.start(t0 + s.start + LEAD);
+      return src;
+    });
+    $('#result').hidden = record ? true : $('#result').hidden;
+    run = { t0, segs, total, sources, recorder, stream, chunks, mime, record };
+    updateButtons();
+  } catch (e) {
+    console.error(e);
+    busy = false; updateButtons();
+    setProgress(0, e.message, true);
+  }
+}
+
+function finish(completed) {
+  const r = run;
+  if (!r) return;
+  run = null;
+  r.sources.forEach(s => { try { s.stop(); } catch {} s.disconnect(); });
+  graph.bgGain.gain.value = 0;
+  bgVideo.muted = true;
+  liveId = null;
+  memes.forEach(m => m.row.classList.remove('live'));
+  if (r.recorder) {
+    r.recorder.onstop = () => {
+      r.stream.getVideoTracks().forEach(t => t.stop());
+      if (completed) showResult(new Blob(r.chunks, { type: r.mime || 'video/webm' }), r.total);
+    };
+    r.recorder.stop();
+  }
+  busy = false; updateButtons();
+  setProgress(completed ? 1 : 0, completed ? (r.record ? 'Finishing video file…' : 'Preview finished') : 'Stopped');
+}
+
+function showResult(blob, seconds) {
+  const v = $('#resultVideo');
+  if (v.src) URL.revokeObjectURL(v.src);
+  const url = URL.createObjectURL(blob);
+  const ext = blob.type.includes('mp4') ? 'mp4' : 'webm';
+  const d = new Date(), pad = n => String(n).padStart(2, '0');
+  v.src = url;
+  $('#resultDl').href = url;
+  $('#resultDl').download = `meme-reel-${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}.${ext}`;
+  $('#resultInfo').textContent = `${ext.toUpperCase()} · ${fmt(seconds)} · ${(blob.size / 1e6).toFixed(1)} MB`;
+  $('#result').hidden = false;
+  setProgress(1, 'Done. Your reel is ready below.');
+  $('#result').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+$('#genBtn').onclick = async () => {
+  busy = true; updateButtons();
+  try { getCtx(); await generateAll(); } catch (e) { setProgress(0, e.message, true); }
+  busy = false; updateButtons();
+};
+$('#previewBtn').onclick = () => play(false);
+$('#renderBtn').onclick = () => play(true);
+$('#stopBtn').onclick = () => finish(false);
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden && run?.record) setProgress(undefined, 'Tab hidden: the browser pauses drawing, so the video will freeze. Keep this tab visible.', true);
+});
+
+renderList();
+loadDefaultBg();
+</script>
+</body>
+</html>
