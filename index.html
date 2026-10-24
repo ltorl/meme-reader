@@ -173,8 +173,8 @@
 import { ChatterboxModel, AutoProcessor, Tensor, env } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.1';
 
 const MODEL_ID = 'ResembleAI/chatterbox-turbo-ONNX';
-// 4-bit weights with fp16 math (~0.56 GB)
-const DTYPE = { embed_tokens: 'q4f16', speech_encoder: 'q4f16', language_model: 'q4f16', conditional_decoder: 'q4f16' };
+// q4f16 (~0.64 GB), except the vocoder: its q4f16 variant garbles speech on WebGPU, so it keeps fp32 math
+const DTYPE = { embed_tokens: 'q4f16', speech_encoder: 'q4f16', language_model: 'q4f16', conditional_decoder: 'q4' };
 
 let model = null, processor = null, speaker = null, loading = null, queue = Promise.resolve();
 
@@ -370,7 +370,7 @@ function voiceReady() {
     await ttsCall('voice', { samples: voice.samples });
   })().catch(e => { if (voice) voice.ready = null; throw e; });
 }
-modelStatus(`Chatterbox Turbo runs right here in your browser on WebGPU. The first load downloads about 0.56 GB${isFile ? '' : ', which is then cached'}.`);
+modelStatus(`Chatterbox Turbo runs right here in your browser on WebGPU. The first load downloads about 0.64 GB${isFile ? '' : ', which is then cached'}.`);
 $('#fileWarn').hidden = !isFile;
 $('#serveUrl').textContent = 'http://localhost:8000/' + location.pathname.split('/').pop();
 
