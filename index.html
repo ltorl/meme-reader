@@ -125,12 +125,12 @@
           <button class="btn" id="voiceBtn">Upload voice clip</button>
           <button class="btn" id="recBtn">● Record</button>
         </div>
-        <input id="voiceFile" type="file" accept="audio/*,video/*" hidden>
+        <input id="voiceFile" type="file" accept="audio/*,video/*,.json" hidden>
         <p class="hint" id="voiceInfo"></p>
         <audio id="voiceAudio" controls hidden></audio>
         <div id="modelBox" class="badge" style="margin-top:12px"></div>
         <div class="bar" id="modelBarWrap" hidden><div id="modelBar"></div></div>
-        <p class="hint" id="fileWarn" hidden>This page was opened as a file, so the model can't be cached and parkour.mp4 can't load automatically. In this folder, run <code>python3 -m http.server 8000</code> and open <code>http://localhost:8000/meme-reader.html</code> instead.</p>
+        <p class="hint" id="fileWarn" hidden>This page was opened as a file, so the model can't be cached and parkour.mp4 can't load automatically. In this folder, run <code>python3 -m http.server 8000</code> and open <code id="serveUrl">http://localhost:8000/</code> instead.</p>
       </div>
 
       <div class="card">
@@ -173,8 +173,8 @@
 import { ChatterboxModel, AutoProcessor, Tensor, env } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.1';
 
 const MODEL_ID = 'ResembleAI/chatterbox-turbo-ONNX';
-// 4-bit weights with fp32 math (~0.7 GB). The fp16/q4f16 variants mumble on WebGPU.
-const DTYPE = { embed_tokens: 'q4', speech_encoder: 'q4', language_model: 'q4', conditional_decoder: 'q4' };
+// 4-bit weights with fp16 math (~0.56 GB)
+const DTYPE = { embed_tokens: 'q4f16', speech_encoder: 'q4f16', language_model: 'q4f16', conditional_decoder: 'q4f16' };
 
 let model = null, processor = null, speaker = null, loading = null, queue = Promise.resolve();
 
@@ -370,8 +370,9 @@ function voiceReady() {
     await ttsCall('voice', { samples: voice.samples });
   })().catch(e => { if (voice) voice.ready = null; throw e; });
 }
-modelStatus(`Chatterbox Turbo runs right here in your browser on WebGPU. The first load downloads about 0.7 GB${isFile ? '' : ', which is then cached'}.`);
+modelStatus(`Chatterbox Turbo runs right here in your browser on WebGPU. The first load downloads about 0.56 GB${isFile ? '' : ', which is then cached'}.`);
 $('#fileWarn').hidden = !isFile;
+$('#serveUrl').textContent = 'http://localhost:8000/' + location.pathname.split('/').pop();
 
 const voiceKey = () => voice ? voice.key : 'none';
 const audioKey = m => voiceKey() + '|' + m.text.trim();
@@ -436,8 +437,21 @@ $('#voiceBtn').onclick = () => $('#voiceFile').click();
 $('#voiceFile').onchange = e => {
   const f = e.target.files[0];
   e.target.value = '';
-  if (f) setVoice(f, f.name, `${f.name}:${f.size}:${f.lastModified}`);
+  if (f) loadVoiceFile(f);
 };
+const isDoppel = f => /\.json$/i.test(f.name);
+async function loadVoiceFile(f) {
+  if (!isDoppel(f)) return setVoice(f, f.name, `${f.name}:${f.size}:${f.lastModified}`);
+  // .doppel.json voice profile: { format: "doppel-voice", name, audio: "data:audio/wav;base64,…" }
+  try {
+    const d = JSON.parse(await f.text());
+    if (d.format !== 'doppel-voice' || typeof d.audio !== 'string' || !d.audio.startsWith('data:audio/')) throw 0;
+    const blob = await (await fetch(d.audio)).blob();
+    await setVoice(blob, d.name || f.name, `doppel:${f.name}:${f.size}:${f.lastModified}`);
+  } catch {
+    $('#voiceInfo').textContent = `“${f.name}” isn't a doppel voice file.`;
+  }
+}
 async function setVoice(f, name, key) {
   let buf;
   try {
@@ -716,6 +730,8 @@ window.addEventListener('drop', e => {
   const files = [...e.dataTransfer.files];
   const vid = files.find(f => f.type.startsWith('video/'));
   if (vid) setBg(vid);
+  const doppel = files.find(isDoppel);
+  if (doppel) loadVoiceFile(doppel);
   addFiles(files);
 });
 
