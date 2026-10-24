@@ -4,7 +4,6 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Meme Reader</title>
-<script defer src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
 <style>
   :root {
     --bg: #0c0d11; --panel: #15171e; --panel2: #1c1f28; --line: #2a2e3a;
@@ -168,6 +167,66 @@
 
 <video id="bg" muted loop playsinline preload="auto" hidden></video>
 
+<!-- Florence-2 reads the meme text, in its own module Web Worker. -->
+<script type="text/plain" id="ocr-worker">
+import { Florence2ForConditionalGeneration, AutoProcessor, RawImage, env } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.1';
+
+const MODEL_ID = 'onnx-community/Florence-2-base-ft';
+const TASK = '<OCR_WITH_REGION>';   // one label per text line, so lines don't run together
+
+let model = null, processor = null, loading = null, queue = Promise.resolve();
+
+async function load({ cache }) {
+  env.useBrowserCache = cache;
+  let device = 'wasm';
+  try { if (navigator.gpu && await navigator.gpu.requestAdapter()) device = 'webgpu'; } catch {}
+  const files = new Map();
+  const progress_callback = p => {
+    if (p.status !== 'progress' || !p.total) return;
+    files.set(p.file, [p.loaded, p.total]);
+    let loaded = 0, total = 0;
+    for (const [l, t] of files.values()) { loaded += l; total += t; }
+    postMessage({ type: 'progress', loaded, total });
+  };
+  processor = await AutoProcessor.from_pretrained(MODEL_ID);
+  // 4-bit weights with fp32 math (~460 MB); the q4f16 build fails to load
+  model = await Florence2ForConditionalGeneration.from_pretrained(MODEL_ID, { dtype: 'q4', device, progress_callback });
+  return { device };
+}
+
+async function read(blob) {
+  const image = await RawImage.fromBlob(blob);
+  const inputs = await processor(image, processor.construct_prompts(TASK));
+  const ids = await model.generate({ ...inputs, max_new_tokens: 300 });
+  const text = processor.batch_decode(ids, { skip_special_tokens: false })[0];
+  const { labels, quad_boxes } = processor.post_process_generation(text, TASK, image.size)[TASK];
+  // Reading order: top to bottom, then left to right for lines at the same height
+  const tol = image.height * 0.02;
+  const lines = labels.map((t, i) => {
+    const b = quad_boxes[i];
+    return { t: t.replace(/<\/?s>/g, '').trim(), x: Math.min(b[0], b[2], b[4], b[6]), y: Math.min(b[1], b[3], b[5], b[7]) };
+  });
+  lines.sort((a, b) => Math.abs(a.y - b.y) < tol ? a.x - b.x : a.y - b.y);
+  return lines.map(l => l.t).filter(Boolean);
+}
+
+async function handle({ type, ...args }) {
+  if (type === 'load') return await (loading ??= load(args).catch(e => { loading = null; throw e; }));
+  if (type === 'ocr') {
+    if (!model) throw new Error('Model not loaded');
+    return await read(args.blob);
+  }
+  throw new Error('Unknown request ' + type);
+}
+
+self.onmessage = ({ data: { id, ...req } }) => {
+  queue = queue.then(async () => {
+    try { postMessage({ id, ok: true, result: await handle(req) }); }
+    catch (e) { postMessage({ id, ok: false, error: e?.message || String(e) }); }
+  });
+};
+</script>
+
 <!-- Chatterbox Turbo runs in a module Web Worker (built from this block) so the page stays responsive. -->
 <script type="text/plain" id="tts-worker">
 import { ChatterboxModel, AutoProcessor, Tensor, env } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@4.3.1';
@@ -263,7 +322,7 @@ const memes = [];
 let nextId = 1, selectedId = null, dragId = null;
 let actx = null, graph = null, run = null, busy = false;
 let voice = null, bgReady = false;
-let ocrWorker = null, ocrChain = Promise.resolve(), lineSrc = null, liveId = null;
+let ocrChain = Promise.resolve(), lineSrc = null, liveId = null;
 
 // ---------- settings (remembered per browser) ----------
 const store = {
@@ -305,8 +364,7 @@ function ensureGraph() {
 // ---------- Chatterbox Turbo (in-browser, WebGPU) ----------
 const SR = 24000;
 const isFile = location.protocol === 'file:';
-let ttsWorker = null, reqId = 0, modelReady = null;
-const requests = new Map();
+let modelReady = null;
 
 function modelStatus(text, cls = '', pill) {
   const box = $('#modelBox');
@@ -314,38 +372,50 @@ function modelStatus(text, cls = '', pill) {
   box.className = 'badge ' + cls;
   if (pill) { $('#modelPill').textContent = pill; $('#modelPill').className = 'pill ' + cls; }
 }
-function ttsCall(type, args = {}) {
-  if (!ttsWorker) {
-    const src = $('#tts-worker').textContent;
-    ttsWorker = new Worker(URL.createObjectURL(new Blob([src], { type: 'text/javascript' })), { type: 'module' });
-    ttsWorker.onmessage = ({ data }) => {
-      if (data.type === 'progress') {
-        $('#modelBarWrap').hidden = false;
-        $('#modelBar').style.width = (100 * data.loaded / data.total).toFixed(1) + '%';
-        modelStatus(`Downloading Chatterbox Turbo… ${(data.loaded / 1e6).toFixed(0)} / ${(data.total / 1e6).toFixed(0)} MB`, '', 'Downloading voice model…');
-        return;
-      }
-      const r = requests.get(data.id);
-      requests.delete(data.id);
+// Runs one of the worker <script> blocks above; returns call(type, args) → Promise
+function spawnWorker(scriptId, { onProgress, onCrash }) {
+  const pending = new Map();
+  let worker = null, seq = 0;
+  const start = () => {
+    const src = $('#' + scriptId).textContent;
+    worker = new Worker(URL.createObjectURL(new Blob([src], { type: 'text/javascript' })), { type: 'module' });
+    worker.onmessage = ({ data }) => {
+      if (data.type === 'progress') return onProgress(data);
+      const r = pending.get(data.id);
+      pending.delete(data.id);
       data.ok ? r.ok(data.result) : r.fail(new Error(data.error));
     };
-    ttsWorker.onerror = e => {
+    worker.onerror = e => {
       e.preventDefault?.();
-      const err = new Error('The voice model crashed' + (e.message ? `: ${e.message}` : '') + '. Reload the page to try again.');
-      requests.forEach(r => r.fail(err));
-      requests.clear();
-      ttsWorker = null;
-      modelReady = null;
-      if (voice) voice.ready = null;
-      modelStatus(err.message, 'err', 'Voice model error');
+      const err = onCrash(e);
+      pending.forEach(r => r.fail(err));
+      pending.clear();
+      worker = null;
     };
-  }
-  return new Promise((ok, fail) => {
-    const id = ++reqId;
-    requests.set(id, { ok, fail });
-    ttsWorker.postMessage({ id, type, ...args });
-  });
+  };
+  return (type, args = {}) => {
+    if (!worker) start();
+    return new Promise((ok, fail) => {
+      const id = ++seq;
+      pending.set(id, { ok, fail });
+      worker.postMessage({ id, type, ...args });
+    });
+  };
 }
+const ttsCall = spawnWorker('tts-worker', {
+  onProgress(data) {
+    $('#modelBarWrap').hidden = false;
+    $('#modelBar').style.width = (100 * data.loaded / data.total).toFixed(1) + '%';
+    modelStatus(`Downloading Chatterbox Turbo… ${(data.loaded / 1e6).toFixed(0)} / ${(data.total / 1e6).toFixed(0)} MB`, '', 'Downloading voice model…');
+  },
+  onCrash(e) {
+    const err = new Error('The voice model crashed' + (e.message ? `: ${e.message}` : '') + '. Reload the page to try again.');
+    modelReady = null;
+    if (voice) voice.ready = null;
+    modelStatus(err.message, 'err', 'Voice model error');
+    return err;
+  },
+});
 function loadModel() {
   return modelReady ??= (async () => {
     modelStatus('Loading Chatterbox Turbo…', '', 'Loading voice model…');
@@ -519,28 +589,27 @@ function sentenceCase(t) {
     .replace(/(^\s*|[.!?]\s+)([a-z])/g, (_, p, c) => p + c.toUpperCase())
     .replace(/\bi\b/g, 'I').replace(/\bi'(m|ve|ll|d)\b/g, "I'$1");
 }
-function cleanOcr(raw) {
-  const lines = raw.split(/\n+/)
-    .map(l => l.replace(/[|_~`^<>{}\[\]\\=*#@]/g, ' ').replace(/\s+/g, ' ').trim())
-    .filter(l => {
-      const good = (l.match(/[a-z0-9]/gi) || []).length;
-      return good >= 2 && good / l.length > 0.55;
-    });
-  let t = lines.join(' ').replace(/\s+([,.!?;:])/g, '$1').trim();
+function cleanOcr(lines) {
+  let t = lines.map(l => l.replace(/\s+/g, ' ').trim()).filter(l => /[a-z0-9]/i.test(l))
+    .join(' ').replace(/\s+([,.!?;:])/g, '$1').trim();
   if (/[A-Z]/.test(t) && t === t.toUpperCase()) t = sentenceCase(t);
   return t;
 }
-function ocrSource(img) {
-  // Upscaling small memes helps Tesseract with chunky Impact-style text
-  const k = Math.min(3, Math.max(1, 1600 / img.naturalWidth));
-  const c = document.createElement('canvas');
-  c.width = Math.round(img.naturalWidth * k);
-  c.height = Math.round(img.naturalHeight * k);
-  const cx = c.getContext('2d');
-  cx.fillStyle = '#fff';
-  cx.fillRect(0, 0, c.width, c.height);
-  cx.drawImage(img, 0, 0, c.width, c.height);
-  return c;
+let ocrReady = null, ocrLoadText = '';
+const ocrCall = spawnWorker('ocr-worker', {
+  onProgress(data) {
+    ocrLoadText = `Downloading text reader… ${Math.round(100 * data.loaded / data.total)}%`;
+    memes.forEach(refreshStatus);
+  },
+  onCrash() {
+    ocrReady = null;
+    return new Error('The text reader crashed');
+  },
+});
+function loadOcr() {
+  return ocrReady ??= ocrCall('load', { cache: !isFile })
+    .catch(e => { ocrReady = null; throw e; })
+    .finally(() => { ocrLoadText = ''; memes.forEach(refreshStatus); });
 }
 function queueOcr(m, force = false) {
   m.ocr = 'queued';
@@ -549,15 +618,11 @@ function queueOcr(m, force = false) {
 }
 async function runOcr(m, force) {
   if (!memes.includes(m)) return;
-  if (!window.Tesseract) { m.ocr = 'unavailable'; refreshStatus(m); return; }
   m.ocr = 'reading';
   refreshStatus(m);
   try {
-    await m.img.decode().catch(() => {});
-    ocrWorker ??= Tesseract.createWorker('eng');
-    const worker = await ocrWorker;
-    const { data } = await worker.recognize(ocrSource(m.img));
-    const text = cleanOcr(data.text || '');
+    await loadOcr();
+    const text = cleanOcr(await ocrCall('ocr', { blob: m.file }));
     // Don't clobber text the user already typed (unless they asked to re-scan)
     if (force || !m.text.trim()) {
       m.text = text;
@@ -566,7 +631,6 @@ async function runOcr(m, force) {
     m.ocr = text ? 'done' : 'empty';
   } catch (e) {
     console.error('OCR failed', e);
-    ocrWorker = null;
     m.ocr = 'failed';
   }
   refreshStatus(m);
@@ -578,13 +642,12 @@ function refreshStatus(m) {
   if (!el) return;
   let text = '', cls = '';
   const a = freshAudio(m);
-  if (m.ocr === 'queued' || m.ocr === 'reading') text = m.ocr === 'reading' ? 'Reading text from image…' : 'Waiting to read text…';
+  if (m.ocr === 'queued' || m.ocr === 'reading') text = ocrLoadText || (m.ocr === 'reading' ? 'Reading text from image…' : 'Waiting to read text…');
   else if (m.pending) text = 'Generating voice…';
   else if (m.error) { text = m.error; cls = 'err'; }
   else if (a) { text = `✓ Voice ready · ${a.buffer.duration.toFixed(1)} s`; cls = 'ok'; }
   else if (!m.text.trim()) {
-    text = m.ocr === 'unavailable' ? 'OCR unavailable (offline?): type the text'
-      : m.ocr === 'failed' ? "Couldn't read text: type it in"
+    text = m.ocr === 'failed' ? "Couldn't read text: type it in"
       : `No text: shown silently for ${HOLD} s`;
     cls = 'warn';
   }
@@ -702,7 +765,7 @@ function remove(m) {
 function addFiles(files) {
   const imgs = [...files].filter(f => f.type.startsWith('image/'));
   for (const f of imgs) {
-    const m = { id: nextId++, name: f.name || 'pasted image', url: URL.createObjectURL(f), img: new Image(), text: '', audio: null, pending: null, error: null, ocr: 'queued' };
+    const m = { id: nextId++, name: f.name || 'pasted image', file: f, url: URL.createObjectURL(f), img: new Image(), text: '', audio: null, pending: null, error: null, ocr: 'queued' };
     m.img.src = m.url;
     memes.push(m);
     buildRow(m);
@@ -957,6 +1020,7 @@ document.addEventListener('visibilitychange', () => {
 renderList();
 loadDefaultBg();
 loadModel().catch(() => {});
+loadOcr().catch(() => {});
 </script>
 </body>
 </html>
