@@ -20,7 +20,6 @@
   header { display: flex; align-items: center; gap: 12px; padding: 14px 20px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
   header h1 { margin: 0; font-size: 18px; font-weight: 750; letter-spacing: -.01em; }
   header h1 span { color: var(--accent); }
-  header .sub { color: var(--muted); }
   .pill { margin-left: auto; display: inline-flex; align-items: center; gap: 8px; padding: 5px 12px; border-radius: 999px; background: var(--panel2); border: 1px solid var(--line); color: var(--muted); font-size: 12.5px; }
   .pill::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
   .pill.ok::before { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
@@ -70,7 +69,6 @@
   .icon:hover:not(:disabled) { color: var(--text); border-color: #3b4152; }
   .icon:disabled { opacity: .3; cursor: default; }
   .icon.del:hover { color: var(--err); border-color: var(--err); }
-  #empty { text-align: center; color: var(--muted); padding: 10px 0 2px; }
 
   .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
   @media (max-width: 1180px) { .grid2 { grid-template-columns: 1fr; } }
@@ -81,6 +79,8 @@
   .check { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; cursor: pointer; }
   .check input { accent-color: var(--accent); width: 16px; height: 16px; }
   #voiceAudio { width: 100%; height: 36px; margin-top: 10px; }
+  #voiceInfo:empty { display: none; }
+  #recBtn.recording { border-color: var(--err); color: var(--err); }
   .badge { font-size: 12.5px; padding: 8px 10px; border-radius: 8px; background: #0c0d11; border: 1px solid var(--line); margin-bottom: 10px; }
   .badge.ok { border-color: #3ddc9755; } .badge.warn { border-color: #ffb54766; color: var(--warn); } .badge.err { border-color: #ff616166; color: var(--err); }
   details { margin-top: 12px; font-size: 12.5px; color: var(--muted); }
@@ -104,7 +104,6 @@
 <body>
 <header>
   <h1>Meme<span>Reader</span></h1>
-  <div class="sub">Drop memes → reorder → voiced 9:16 reel</div>
   <div id="modelPill" class="pill">Voice model not loaded</div>
 </header>
 
@@ -114,11 +113,9 @@
       <h2>Memes <span class="count" id="count"></span></h2>
       <div id="drop" tabindex="0" role="button" aria-label="Add meme images">
         <strong>Drop meme images here</strong>
-        <span class="hint">or click to browse · paste with ⌘V / Ctrl+V · text is read from each image automatically</span>
       </div>
       <input id="fileInput" type="file" accept="image/*" multiple hidden>
       <ol id="list"></ol>
-      <div id="empty" class="hint">No memes yet.</div>
     </div>
 
     <div class="grid2">
@@ -126,35 +123,21 @@
         <h2>Voice clone</h2>
         <div class="row">
           <button class="btn" id="voiceBtn">Upload voice clip</button>
-          <button class="btn small" id="modelBtn">Load model now</button>
+          <button class="btn" id="recBtn">● Record</button>
         </div>
         <input id="voiceFile" type="file" accept="audio/*,video/*" hidden>
-        <p class="hint" id="voiceInfo">Upload 10–20 s of one person speaking clearly (at least 5 s). Every meme is read in that voice.</p>
+        <p class="hint" id="voiceInfo"></p>
         <audio id="voiceAudio" controls hidden></audio>
         <div id="modelBox" class="badge" style="margin-top:12px"></div>
         <div class="bar" id="modelBarWrap" hidden><div id="modelBar"></div></div>
-        <p class="hint">Tip: Turbo understands tags like <code>[laugh]</code>, <code>[chuckle]</code>, <code>[sigh]</code> and <code>[gasp]</code> in the text.</p>
         <p class="hint" id="fileWarn" hidden>This page was opened as a file, so the model can't be cached and parkour.mp4 can't load automatically. In this folder, run <code>python3 -m http.server 8000</code> and open <code>http://localhost:8000/meme-reader.html</code> instead.</p>
       </div>
 
       <div class="card">
-        <h2>Video</h2>
-        <div id="bgStatus" class="badge">Looking for parkour.mp4…</div>
-        <div class="row" style="margin-bottom:14px">
-          <button class="btn small" id="bgPick">Choose background video</button>
-          <button class="btn small" id="bgRetry">Look for parkour.mp4 again</button>
-        </div>
-        <input id="bgFile" type="file" accept="video/*" hidden>
-
         <label class="field"><span>Pause between memes <b id="gapVal"></b></span>
           <input type="range" id="gap" min="0" max="2" step="0.05">
         </label>
-        <label class="field"><span>Background video volume <b id="bgVolVal"></b></span>
-          <input type="range" id="bgVol" min="0" max="1" step="0.05">
-        </label>
         <label class="check"><input type="checkbox" id="random"> Start the background at a random point</label>
-        <label class="check"><input type="checkbox" id="fixCaps"> Convert ALL-CAPS meme text to normal case</label>
-        <p class="hint">Output is 1080×1920 at 30 fps, recorded in real time. Keep this tab visible while it renders.</p>
       </div>
     </div>
   </section>
@@ -279,7 +262,7 @@ const bgVideo = $('#bg');
 const memes = [];
 let nextId = 1, selectedId = null, dragId = null;
 let actx = null, graph = null, run = null, busy = false;
-let voice = null, bgReady = false, bgName = '';
+let voice = null, bgReady = false;
 let ocrWorker = null, ocrChain = Promise.resolve(), lineSrc = null, liveId = null;
 
 // ---------- settings (remembered per browser) ----------
@@ -289,9 +272,7 @@ const store = {
 };
 const settings = {
   gap: store.get('gap', 0.4),
-  bgVol: store.get('bgVol', 0),
   random: store.get('random', true),
-  fixCaps: store.get('fixCaps', true),
 };
 function bindSetting(id, key, fmt) {
   const el = $('#' + id), out = $('#' + id + 'Val');
@@ -306,9 +287,7 @@ function bindSetting(id, key, fmt) {
   });
 }
 bindSetting('gap', 'gap', v => v.toFixed(2) + ' s');
-bindSetting('bgVol', 'bgVol', v => Math.round(v * 100) + '%');
 bindSetting('random', 'random');
-bindSetting('fixCaps', 'fixCaps');
 
 const fmt = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
 
@@ -320,11 +299,7 @@ function ensureGraph() {
   const recDest = ctx.createMediaStreamDestination();
   const voiceGain = ctx.createGain();
   voiceGain.connect(ctx.destination); voiceGain.connect(recDest);
-  const bgGain = ctx.createGain();
-  bgGain.gain.value = 0;
-  bgGain.connect(ctx.destination); bgGain.connect(recDest);
-  ctx.createMediaElementSource(bgVideo).connect(bgGain);
-  return graph = { recDest, voiceGain, bgGain };
+  return graph = { recDest, voiceGain };
 }
 
 // ---------- Chatterbox Turbo (in-browser, WebGPU) ----------
@@ -374,16 +349,13 @@ function ttsCall(type, args = {}) {
 function loadModel() {
   return modelReady ??= (async () => {
     modelStatus('Loading Chatterbox Turbo…', '', 'Loading voice model…');
-    $('#modelBtn').disabled = true;
     try {
       const { device } = await ttsCall('load', { cache: !isFile });
       const where = device === 'webgpu' ? 'WebGPU' : 'CPU (no WebGPU, so this will be slow)';
       modelStatus(`✓ Chatterbox Turbo loaded · ${where}`, 'ok', `Chatterbox Turbo · ${device === 'webgpu' ? 'WebGPU' : 'CPU'}`);
-      $('#modelBtn').hidden = true;
       return device;
     } catch (e) {
       modelReady = null;
-      $('#modelBtn').disabled = false;
       modelStatus(`Couldn't load the voice model: ${e.message}`, 'err', 'Voice model error');
       throw e;
     } finally {
@@ -399,7 +371,6 @@ function voiceReady() {
   })().catch(e => { if (voice) voice.ready = null; throw e; });
 }
 modelStatus(`Chatterbox Turbo runs right here in your browser on WebGPU. The first load downloads about 0.7 GB${isFile ? '' : ', which is then cached'}.`);
-$('#modelBtn').onclick = () => loadModel().catch(() => {});
 $('#fileWarn').hidden = !isFile;
 
 const voiceKey = () => voice ? voice.key : 'none';
@@ -462,15 +433,17 @@ async function sayLine(m) {
 
 // voice reference clip: decoded to 24 kHz mono, which is what Chatterbox expects
 $('#voiceBtn').onclick = () => $('#voiceFile').click();
-$('#voiceFile').onchange = async e => {
+$('#voiceFile').onchange = e => {
   const f = e.target.files[0];
   e.target.value = '';
-  if (!f) return;
+  if (f) setVoice(f, f.name, `${f.name}:${f.size}:${f.lastModified}`);
+};
+async function setVoice(f, name, key) {
   let buf;
   try {
     buf = await new OfflineAudioContext(1, 1, SR).decodeAudioData(await f.arrayBuffer());
   } catch {
-    $('#voiceInfo').textContent = `Couldn't read audio from “${f.name}”. Try a WAV or MP3.`;
+    $('#voiceInfo').textContent = `Couldn't read audio from “${name}”. Try a WAV or MP3.`;
     return;
   }
   const len = Math.min(buf.length, SR * 30);
@@ -479,17 +452,51 @@ $('#voiceFile').onchange = async e => {
     const ch = buf.getChannelData(c);
     for (let i = 0; i < len; i++) samples[i] += ch[i] / buf.numberOfChannels;
   }
-  voice = { key: `${f.name}:${f.size}:${f.lastModified}`, samples, ready: null };
+  voice = { key, samples, ready: null };
   const au = $('#voiceAudio');
   if (au.src) URL.revokeObjectURL(au.src);
   au.src = URL.createObjectURL(f);
   au.hidden = false;
   $('#voiceBtn').textContent = 'Change voice clip';
   const d = buf.duration;
-  $('#voiceInfo').textContent = `Cloning from “${f.name}” (${d.toFixed(1)} s${d > 30 ? ', using the first 30 s' : ''}).` +
+  $('#voiceInfo').textContent = `Cloning from “${name}” (${d.toFixed(1)} s${d > 30 ? ', using the first 30 s' : ''}).` +
     (d < 5 ? ' This is too short: Turbo needs at least 5 s of speech.' : '');
   memes.forEach(refreshStatus);
-  voiceReady().catch(() => {});   // start downloading/encoding right away
+  voiceReady().catch(() => {});   // start encoding right away
+}
+
+// record a voice clip from the microphone (stops by itself after 30 s)
+let micRec = null;
+$('#recBtn').onclick = async () => {
+  const btn = $('#recBtn');
+  if (micRec) { micRec.stop(); return; }
+  let stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch {
+    $('#voiceInfo').textContent = "Couldn't use the microphone. Check the browser's permission for this page.";
+    return;
+  }
+  const chunks = [], started = Date.now();
+  const rec = micRec = new MediaRecorder(stream);
+  const tick = setInterval(() => {
+    const s = (Date.now() - started) / 1000;
+    btn.textContent = `■ Stop (${fmt(s)})`;
+    if (s >= 30) rec.stop();
+  }, 250);
+  rec.ondataavailable = e => e.data.size && chunks.push(e.data);
+  rec.onstop = () => {
+    clearInterval(tick);
+    stream.getTracks().forEach(t => t.stop());
+    micRec = null;
+    btn.classList.remove('recording');
+    btn.textContent = '● Record';
+    const blob = new Blob(chunks, { type: rec.mimeType });
+    if (blob.size) setVoice(blob, 'your recording', `rec:${started}`);
+  };
+  rec.start();
+  btn.classList.add('recording');
+  btn.textContent = '■ Stop (0:00)';
 };
 
 // ---------- OCR ("reading" the meme) ----------
@@ -506,7 +513,7 @@ function cleanOcr(raw) {
       return good >= 2 && good / l.length > 0.55;
     });
   let t = lines.join(' ').replace(/\s+([,.!?;:])/g, '$1').trim();
-  if (settings.fixCaps && /[A-Z]/.test(t) && t === t.toUpperCase()) t = sentenceCase(t);
+  if (/[A-Z]/.test(t) && t === t.toUpperCase()) t = sentenceCase(t);
   return t;
 }
 function ocrSource(img) {
@@ -655,7 +662,6 @@ function renderList() {
     m.row.classList.toggle('selected', m.id === selectedId);
   });
   renumber();
-  $('#empty').hidden = memes.length > 0;
   $('#count').textContent = memes.length ? `${memes.length} meme${memes.length > 1 ? 's' : ''}` : '';
   updateButtons();
 }
@@ -709,38 +715,29 @@ window.addEventListener('drop', e => {
   $('#drop').classList.remove('over');
   const files = [...e.dataTransfer.files];
   const vid = files.find(f => f.type.startsWith('video/'));
-  if (vid) setBg(vid, vid.name);
+  if (vid) setBg(vid);
   addFiles(files);
 });
 
 // ---------- background video ----------
-function bgStatus(text, cls = '') { const el = $('#bgStatus'); el.textContent = text; el.className = 'badge ' + cls; }
-function setBg(blob, name) {
+function setBg(blob) {
   if (bgVideo.src) URL.revokeObjectURL(bgVideo.src);
   bgReady = false;
-  bgName = name;
-  bgStatus(`Loading ${name}…`);
   bgVideo.src = URL.createObjectURL(blob);
   bgVideo.play().catch(() => {});
 }
 async function loadDefaultBg() {
-  bgStatus('Looking for parkour.mp4…');
   try {
     // Fetched as a blob so the canvas stays untainted and can be recorded
     const r = await fetch('parkour.mp4', { cache: 'no-store' });
     if (!r.ok) throw new Error(r.status);
-    setBg(await r.blob(), 'parkour.mp4');
+    setBg(await r.blob());
   } catch {
-    bgStatus(location.protocol === 'file:'
-      ? 'Opened as a local file, so parkour.mp4 can\'t load automatically. Choose it below, or serve this folder (see the Voice clone card).'
-      : 'parkour.mp4 isn\'t in this folder yet. Add it and click "Look again", or choose a video below.', 'warn');
+    console.warn('parkour.mp4 not found next to this page');
   }
 }
-bgVideo.addEventListener('loadeddata', () => { bgReady = true; bgStatus(`✓ ${bgName} · ${fmt(bgVideo.duration)}`, 'ok'); });
-bgVideo.addEventListener('error', () => { if (!bgVideo.src) return; bgReady = false; bgStatus(`Couldn't play ${bgName}`, 'err'); });
-$('#bgPick').onclick = () => $('#bgFile').click();
-$('#bgFile').onchange = e => { const f = e.target.files[0]; if (f) setBg(f, f.name); e.target.value = ''; };
-$('#bgRetry').onclick = loadDefaultBg;
+bgVideo.addEventListener('loadeddata', () => { bgReady = true; });
+bgVideo.addEventListener('error', () => { bgReady = false; });
 
 function seekBg(t) {
   return new Promise(ok => {
@@ -866,8 +863,6 @@ async function play(record) {
     if (bgReady) {
       const room = bgVideo.duration - total - 0.5;
       await seekBg(settings.random && room > 0 ? Math.random() * room : 0);
-      bgVideo.muted = false;
-      graph.bgGain.gain.value = settings.bgVol;
       await bgVideo.play().catch(() => {});
     }
 
@@ -903,8 +898,6 @@ function finish(completed) {
   if (!r) return;
   run = null;
   r.sources.forEach(s => { try { s.stop(); } catch {} s.disconnect(); });
-  graph.bgGain.gain.value = 0;
-  bgVideo.muted = true;
   liveId = null;
   memes.forEach(m => m.row.classList.remove('live'));
   if (r.recorder) {
@@ -947,6 +940,7 @@ document.addEventListener('visibilitychange', () => {
 
 renderList();
 loadDefaultBg();
+loadModel().catch(() => {});
 </script>
 </body>
 </html>
